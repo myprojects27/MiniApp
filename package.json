@@ -2,6 +2,11 @@
   "name": "abj-tutorial",
   "version": "1.0.0",
   "private": true,
-  "engines": { "node": ">=18" },
-  "dependencies": {}
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "cheerio": "^1.2.0",
+    "pdf-parse": "^2.4.5"
+  }
 }
