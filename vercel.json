@@ -5,22 +5,61 @@
     "api/*.js": { "memory": 512, "maxDuration": 60 }
   },
   "rewrites": [
-    { "source": "/admin",            "destination": "/admin.html" },
-    { "source": "/status",           "destination": "/status.html" },
+    { "source": "/admin",  "destination": "/admin.html" },
+    { "source": "/status", "destination": "/status.html" },
 
     { "source": "/api/admin-login",        "destination": "/api/admin?route=login" },
     { "source": "/api/admin-list",         "destination": "/api/admin?route=list" },
     { "source": "/api/admin-approve",      "destination": "/api/admin?route=approve" },
     { "source": "/api/admin-reject",       "destination": "/api/admin?route=reject" },
+    { "source": "/api/admin-bulk",         "destination": "/api/admin?route=bulk" },
+    { "source": "/api/admin-export",       "destination": "/api/admin?route=export" },
+    { "source": "/api/admin-logs",         "destination": "/api/admin?route=logs" },
     { "source": "/api/admin-settings",     "destination": "/api/admin?route=settings" },
     { "source": "/api/admin-admins",       "destination": "/api/admin?route=admins" },
     { "source": "/api/admin-videos",       "destination": "/api/admin?route=videos" },
     { "source": "/api/admin-testimonials", "destination": "/api/admin?route=testimonials" },
     { "source": "/api/admin-chats",        "destination": "/api/admin?route=chats" },
     { "source": "/api/admin-stats",        "destination": "/api/admin?route=stats" },
+    { "source": "/api/admin-rate-limits",  "destination": "/api/admin?route=rate-limits" },
+    { "source": "/api/admin-sign",         "destination": "/api/admin?route=sign" },
+    { "source": "/api/announcements",        "destination": "/api/admin?route=announcements" },
+    { "source": "/api/admin-announcements",  "destination": "/api/admin?route=admin-announcements" },
+
+    { "source": "/api/chat-sign",    "destination": "/api/chat?route=sign" },
 
     { "source": "/api/settings",     "destination": "/api/admin?route=settings" },
     { "source": "/api/videos",       "destination": "/api/admin?route=videos" },
     { "source": "/api/testimonials", "destination": "/api/admin?route=testimonials" }
+  ],
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "X-Content-Type-Options", "value": "nosniff" },
+        { "key": "X-Frame-Options", "value": "SAMEORIGIN" },
+        { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" },
+        { "key": "Strict-Transport-Security", "value": "max-age=31536000; includeSubDomains" },
+        { "key": "Permissions-Policy", "value": "camera=(), microphone=(self), geolocation=(), payment=(), usb=()" }
+      ]
+    },
+    {
+      "source": "/api/(.*)",
+      "headers": [
+        { "key": "Content-Security-Policy", "value": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'" }
+      ]
+    },
+    {
+      "source": "/(index.html)?$",
+      "headers": [
+        { "key": "Content-Security-Policy", "value": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https://img.youtube.com https://i.ytimg.com https://*.supabase.co; media-src 'self' blob: https://*.supabase.co; frame-src https://www.youtube.com https://www.youtube-nocookie.com; connect-src 'self' https://*.supabase.co; frame-ancestors 'self'; base-uri 'self'; form-action 'self'" }
+      ]
+    },
+    {
+      "source": "/status",
+      "headers": [
+        { "key": "Content-Security-Policy", "value": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'" }
+      ]
+    }
   ]
 }

@@ -1,13 +1,17 @@
 const {
   supabaseQuery, supabaseUpdate, uploadScreenshotToStorage,
-  checkRateLimit, getClientIp, json,
+  checkRateLimit, getClientIp, json, enforceSameOrigin,
 } = require('./_lib');
 
 module.exports = async (req, res) => {
+  // Security: block cross-origin browser requests
+  if (enforceSameOrigin(req, res)) return;
+
   if (req.method !== 'POST') return json(res, 405, { error: 'Method not allowed' });
 
   const ip = getClientIp(req);
-  const allowed = await checkRateLimit(ip, 10);
+  // 5 uploads per minute per IP.
+  const allowed = await checkRateLimit(ip, 5);
   if (!allowed) return json(res, 429, { error: 'Too many attempts. Please try again later.' });
 
   const { public_id, screenshot_base64, mime_type } = req.body || {};
@@ -21,11 +25,34 @@ module.exports = async (req, res) => {
   }
   const publicIdNorm = id.replace(/\s+/g, '').replace(/\//g, '-');
 
-  const q = await supabaseQuery(
-    `registrations?public_id=eq.${encodeURIComponent(publicIdNorm)}&select=id,status,screenshot_url`
+  // Lookup: public_id → id_number exact → id_number slash variant
+  let row = null;
+  let q = await supabaseQuery(
+    `registrations?public_id=eq.${encodeURIComponent(publicIdNorm)}&select=id,status,screenshot_url&limit=1`
   );
-  const row = q.data?.[0];
-  if (!row) return json(res, 404, { error: 'Registration not found.' });
+  row = q.data?.[0];
+
+  if (!row) {
+    q = await supabaseQuery(
+      `registrations?id_number=eq.${encodeURIComponent(id)}&select=id,status,screenshot_url&order=created_at.desc&limit=1`
+    );
+    row = q.data?.[0];
+  }
+
+  if (!row) {
+    const idWithSlash = publicIdNorm.replace('-', '/');
+    q = await supabaseQuery(
+      `registrations?id_number=eq.${encodeURIComponent(idWithSlash)}&select=id,status,screenshot_url&order=created_at.desc&limit=1`
+    );
+    row = q.data?.[0];
+  }
+
+  if (!row) {
+    return json(res, 404, {
+      error: 'Registration not found. Please re-submit your registration form.',
+      received_id: publicIdNorm,
+    });
+  }
   if (row.status !== 'pending') {
     return json(res, 400, { error: `Registration already ${row.status}.` });
   }

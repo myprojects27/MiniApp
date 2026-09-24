@@ -36,8 +36,9 @@ button:disabled{opacity:.6;cursor:not-allowed;transform:none;}
 .result .row:last-child{border-bottom:none;}
 .result .row span:first-child{color:var(--muted);font-weight:700;font-size:11.5px;letter-spacing:.5px;text-transform:uppercase;}
 .result .row span:last-child{font-weight:800;}
-.invite-btn{display:inline-flex;align-items:center;justify-content:center;gap:10px;margin-top:16px;width:100%;padding:16px 22px;border-radius:14px;background:linear-gradient(135deg,#f7e07a,#d4af37);color:#0b1220;font-weight:800;font-size:15px;text-decoration:none;box-shadow:0 14px 30px -14px rgba(212,175,55,.95);transition:transform .25s var(--bounce);}
+.invite-btn{display:inline-flex;align-items:center;justify-content:center;gap:10px;margin-top:16px;width:100%;padding:16px 22px;border-radius:14px;background:linear-gradient(135deg,#f7e07a,#d4af37);color:#0b1220;font-weight:800;font-size:15px;text-decoration:none;box-shadow:0 14px 30px -14px rgba(212,175,55,.95);transition:transform .25s var(--bounce);cursor:pointer;border:none;font-family:inherit;}
 .invite-btn:hover{transform:translateY(-2px);}
+.invite-btn:disabled{opacity:.6;cursor:not-allowed;transform:none;}
 .warn{margin-top:14px;padding:14px 16px;border-radius:14px;background:linear-gradient(135deg,#fff8e1,#fde9a8);border:2px solid rgba(212,175,55,.55);}
 .warn strong{display:block;font-size:12.5px;font-weight:800;color:#8a6516;margin-bottom:6px;}
 .warn ul{margin:0;padding-left:18px;list-style:disc;}
@@ -97,12 +98,41 @@ function render(d){
   html += `<div class="row"><span>Semester</span><span>${esc(d.semester)}</span></div>`;
   html += `<div class="row"><span>Stream</span><span>${esc(d.stream)}</span></div>`;
   html += `<div class="row"><span>Submitted</span><span>${new Date(d.created_at).toLocaleDateString()}</span></div>`;
-  if (d.status === 'approved' && d.invite_link){
+
+  if (d.status === 'approved' && (d.invite_link || d.invite_link_available)){
     html += `<div class="warn"><strong>⚠️ One-time invite link</strong><ul><li>Works <b>only once</b>, expires in <b>7 days</b>.</li><li><b>Never share</b> — anyone with the link uses your seat.</li></ul></div>`;
-    html += `<a class="invite-btn" href="${esc(d.invite_link)}" target="_blank" rel="noopener">🌟 Join the Channel Now</a>`;
+    html += `<button class="invite-btn" id="stsReveal" type="button">🌟 Reveal Invite Link</button>`;
+    html += `<div id="stsRevealOut" style="margin-top:12px;"></div>`;
   }
+
   out.className = 'result show ' + cls;
   out.innerHTML = html;
+
+  // Wire the reveal button (gated — the API only returns the URL when we ask for it)
+  const revealBtn = document.getElementById('stsReveal');
+  if (revealBtn) {
+    revealBtn.addEventListener('click', async () => {
+      revealBtn.disabled = true;
+      const orig = revealBtn.textContent;
+      revealBtn.textContent = 'Fetching…';
+      try {
+        const pid = d.public_id || d.id_number;
+        const r = await fetch('/api/status?id=' + encodeURIComponent(pid) + '&reveal=1', { cache: 'no-store' });
+        if (!r.ok) throw new Error('Could not reveal invite link.');
+        const j = await r.json();
+        if (!j.invite_link) throw new Error('Link is not available yet.');
+        const revealOut = document.getElementById('stsRevealOut');
+        if (revealOut) {
+          revealOut.innerHTML = `<a class="invite-btn" href="${esc(j.invite_link)}" target="_blank" rel="noopener">🌟 Join the Channel Now</a>`;
+        }
+        revealBtn.style.display = 'none';
+      } catch (e) {
+        revealBtn.disabled = false;
+        revealBtn.textContent = orig;
+        showError(e.message || 'Please try again.');
+      }
+    });
+  }
 }
 
 function showError(msg){
