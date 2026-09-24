@@ -1,3 +1,4 @@
+const { verifyBankPayment } = require('./_verify');
 const crypto = require('crypto');
 
 const {
@@ -974,3 +975,36 @@ module.exports = {
   SUPABASE_URL,
   SUPABASE_SERVICE_KEY,
 };
+
+
+/* INLINED_VERIFY_PAYMENT */
+async function verifyPayment({ reference, bankName, bankAccount, phone }) {
+  const bankKey = getBankKey(bankName);
+  const SUPPORTED = ['cbe', 'telebirr', 'boa', 'dashen', 'mpesa'];
+  if (!SUPPORTED.includes(bankKey)) {
+    return { result: 'service_error', message: 'This payment method is not supported for auto-verification. Please upload a screenshot for manual review.' };
+  }
+
+  const ref = String(reference || '').trim();
+  if (ref.length < 3) return { result: 'invalid', message: 'Transaction ID is too short.' };
+
+  const suffix = deriveAccountSuffix(bankKey, bankAccount);
+  if ((bankKey === 'cbe' && !suffix) || (bankKey === 'boa' && !suffix)) {
+    return { result: 'service_error', message: 'The receiving bank account is not configured correctly. Please contact ABJ support.' };
+  }
+
+  let result;
+  try { result = await verifyBankPayment({ bankKey, reference: ref, suffix }); }
+  catch (e) { return { result: 'service_error', message: 'Verification failed: ' + (e.message || 'unknown') }; }
+
+  if (!result || result.status === 'failed') {
+    return { result: 'service_error', message: (result && result.error) || 'Verification service error. Upload a screenshot for manual review.' };
+  }
+  if (result.status === 'not_found') {
+    return { result: 'not_found', message: "We couldn't find a payment with that Transaction ID at the bank. Double-check the ID, or upload a screenshot for manual review." };
+  }
+  if (result.amount == null) {
+    return { result: 'service_error', message: "We couldn't read the amount from the receipt. Upload a screenshot for manual review." };
+  }
+  return { result: 'success', message: 'Verified', amount: result.amount, receiver: result.receiverAccount || null };
+}
