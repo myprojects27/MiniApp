@@ -1,16 +1,15 @@
-// Inlined Ethiopian bank verification — axios + pdf-parse (lib path).
+// Inlined Ethiopian bank verification — axios + cheerio + zlib PDF text extraction.
 const axios = require('axios');
 const https = require('https');
+const zlib = require('zlib');
 const cheerio = require('cheerio');
 
-// pdf-parse's index.js runs a test file at require time that Vercel strips.
-// Require the lib directly to skip that.
 let pdfParse = null;
 try {
   pdfParse = require('pdf-parse/lib/pdf-parse.js');
   console.log('[pdf-parse] loaded ok');
 } catch (e) {
-  console.error('[pdf-parse] load failed:', e.message);
+  console.warn('[pdf-parse] load failed, using zlib fallback:', e.message);
 }
 
 const _http = axios.create({
@@ -39,7 +38,89 @@ async function verifyBankPayment({ bankKey, reference, suffix }) {
   }
 }
 
-// ---------- CBE ----------
+// ============================================================
+// PDF text extraction — pdf-parse first, zlib fallback second
+// ============================================================
+async function extractPdfText(buffer) {
+  if (pdfParse) {
+    try {
+      const parsed = await pdfParse(buffer);
+      const t = String(parsed.text || '').trim();
+      if (t) return t;
+    } catch (e) {
+      // fall through to zlib
+    }
+  }
+  return extractPdfTextZlib(buffer);
+}
+
+function extractPdfTextZlib(buffer) {
+  const latin = buffer.toString('latin1');
+  const contentStreams = [];
+
+  // Find every stream...endstream block
+  const streamRe = /stream\r?\n([\s\S]*?)\r?\nendstream/g;
+  let m;
+  while ((m = streamRe.exec(latin)) !== null) {
+    const raw = Buffer.from(m[1], 'latin1');
+    // Try zlib inflate first
+    try {
+      const decompressed = zlib.inflateSync(raw);
+      contentStreams.push(decompressed.toString('latin1'));
+      continue;
+    } catch {}
+    // Try raw deflate
+    try {
+      const decompressed = zlib.inflateRawSync(raw);
+      contentStreams.push(decompressed.toString('latin1'));
+      continue;
+    } catch {}
+    // Not compressed
+    contentStreams.push(m[1]);
+  }
+
+  // Concatenate all content streams and extract text operators
+  const full = contentStreams.join('\n');
+  const out = [];
+
+  // (text) Tj
+  const tjRe = /\(((?:\\.|[^)\\])*)\)\s*Tj/g;
+  let tm;
+  while ((tm = tjRe.exec(full)) !== null) {
+    out.push(unescapePdfString(tm[1]));
+  }
+
+  // [(text) num (text) ...] TJ
+  const tjArrRe = /\[((?:\((?:\\.|[^)\\])*\)|[^\]])*)\]\s*TJ/g;
+  while ((tm = tjArrRe.exec(full)) !== null) {
+    const parts = tm[1].match(/\(((?:\\.|[^)\\])*)\)/g) || [];
+    const joined = parts.map((p) => unescapePdfString(p.slice(1, -1))).join('');
+    out.push(joined);
+  }
+
+  // ' and " operators (next-line text)
+  const tickRe = /\(((?:\\.|[^)\\])*)\)\s*'/g;
+  while ((tm = tickRe.exec(full)) !== null) {
+    out.push(unescapePdfString(tm[1]));
+  }
+
+  return out.join(' ').replace(/\s+/g, ' ').trim();
+}
+
+function unescapePdfString(s) {
+  return s
+    .replace(/\\n/g, ' ')
+    .replace(/\\r/g, ' ')
+    .replace(/\\t/g, ' ')
+    .replace(/\\\(/g, '(')
+    .replace(/\\\)/g, ')')
+    .replace(/\\\\/g, '\\')
+    .replace(/\\(\d{3})/g, (_, oct) => String.fromCharCode(parseInt(oct, 8)));
+}
+
+// ============================================================
+// CBE
+// ============================================================
 async function cbe(reference, suffix) {
   if (!suffix || !/^\d{8}$/.test(suffix)) {
     return { status: 'failed', source: 'none', error: 'CBE requires an 8-digit account suffix.' };
@@ -48,34 +129,22 @@ async function cbe(reference, suffix) {
   const url = 'https://apps.cbe.com.et:100/?id=' + encodeURIComponent(ref + suffix);
 
   let res;
-  try {
-    res = await _http.get(url, { responseType: 'arraybuffer' });
-  } catch (e) {
-    return { status: 'failed', source: 'none', error: 'CBE fetch error: ' + e.message };
-  }
+  try { res = await _http.get(url, { responseType: 'arraybuffer' }); }
+  catch (e) { return { status: 'failed', source: 'none', error: 'CBE fetch error: ' + e.message }; }
 
-  if (res.status >= 400) {
-    return { status: 'failed', source: 'none', error: 'CBE HTTP ' + res.status };
-  }
+  if (res.status >= 400) return { status: 'failed', source: 'none', error: 'CBE HTTP ' + res.status };
 
   const buf = Buffer.from(res.data);
-  if (buf.length < 100) {
-    return { status: 'not_found', source: 'none' };
-  }
+  if (buf.length < 100) return { status: 'not_found', source: 'none' };
   if (buf.slice(0, 5).toString() !== '%PDF-') {
     return { status: 'not_found', source: 'none', error: 'Not a PDF response' };
   }
-  if (!pdfParse) {
-    return { status: 'failed', source: 'pdf', error: 'pdf-parse unavailable' };
-  }
 
   let text = '';
-  try {
-    const parsed = await pdfParse(buf);
-    text = String(parsed.text || '').replace(/\s+/g, ' ').trim();
-  } catch (e) {
-    return { status: 'failed', source: 'pdf', error: 'PDF parse error: ' + e.message };
-  }
+  try { text = await extractPdfText(buf); }
+  catch (e) { return { status: 'failed', source: 'pdf', error: 'PDF parse error: ' + e.message }; }
+
+  text = text.replace(/\s+/g, ' ').trim();
 
   const sec = text.split(/Payment\s*\/\s*Transaction\s*Information/i)[1] || text;
 
@@ -87,12 +156,9 @@ async function cbe(reference, suffix) {
   const feeM  = sec.match(/Commission\s*or\s*Service\s*Charge\s*([\d,]+\.?\d*)\s*ETB/i);
   const vatM  = sec.match(/\d+%\s*VAT\s*on\s*Commission\s*([\d,]+\.?\d*)\s*ETB/i);
 
-  if (!payer && !recv && !amt) {
-    return { status: 'not_found', source: 'pdf' };
-  }
+  if (!payer && !recv && !amt) return { status: 'not_found', source: 'pdf' };
 
-  const nm = (s) =>
-    s ? s.replace(/^(Mr|Mrs|Ms|Dr|Prof)\.?\s+/i, '').replace(/\s+/g, ' ').trim() : undefined;
+  const nm = (s) => s ? s.replace(/^(Mr|Mrs|Ms|Dr|Prof)\.?\s+/i, '').replace(/\s+/g, ' ').trim() : undefined;
 
   return {
     status: 'success',
@@ -110,15 +176,15 @@ async function cbe(reference, suffix) {
   };
 }
 
-// ---------- BOA ----------
+// ============================================================
+// BOA
+// ============================================================
 async function boa(reference, suffix) {
   if (!suffix || !/^\d{5}$/.test(suffix)) {
     return { status: 'failed', source: 'none', error: 'BOA requires a 5-digit account suffix.' };
   }
   const ref = String(reference).trim().toUpperCase();
-  const url =
-    'https://cs.bankofabyssinia.com/api/onlineSlip/getDetails/?id=' +
-    encodeURIComponent(ref + suffix);
+  const url = 'https://cs.bankofabyssinia.com/api/onlineSlip/getDetails/?id=' + encodeURIComponent(ref + suffix);
 
   let res;
   try { res = await _http.get(url); }
@@ -159,22 +225,22 @@ async function boa(reference, suffix) {
   return r;
 }
 
-// ---------- Telebirr ----------
+// ============================================================
+// Telebirr
+// ============================================================
 async function telebirr(input) {
   const t = String(input || '').trim();
   if (/You have transferred|Thank you for using telebirr/i.test(t)) return smsTelebirr(t);
 
   const ref = t.toUpperCase();
   const url = 'https://transactioninfo.ethiotelecom.et/receipt/' + encodeURIComponent(ref);
+
   let res;
   try { res = await _http.get(url); }
-  catch (e) {
-    return { status: 'failed', source: 'none', error: 'Telebirr fetch error: ' + e.message, geoBlocked: true };
-  }
+  catch (e) { return { status: 'failed', source: 'none', error: 'Telebirr fetch error: ' + e.message, geoBlocked: true }; }
 
-  if (res.status >= 400) {
-    return { status: 'failed', source: 'none', error: 'Telebirr HTTP ' + res.status, geoBlocked: true };
-  }
+  if (res.status >= 400) return { status: 'failed', source: 'none', error: 'Telebirr HTTP ' + res.status, geoBlocked: true };
+
   const html = typeof res.data === 'string' ? res.data : String(res.data || '');
   if (!html || html.length < 100) return { status: 'not_found', source: 'none' };
   return htmlTelebirr(html, ref);
@@ -260,7 +326,9 @@ function htmlTelebirr(html, fallbackRef) {
   return r;
 }
 
-// ---------- Dashen ----------
+// ============================================================
+// Dashen
+// ============================================================
 async function dashen(reference) {
   const ref = String(reference).trim().toUpperCase();
   const url = 'https://receipts.dashenbanksc.com/receipt/' + encodeURIComponent(ref);
@@ -311,8 +379,7 @@ function htmlDashen(html, fallbackRef) {
     }
   };
 
-  const nm = (s) =>
-    s ? s.replace(/^(Mr|Mrs|Ms|Dr|Prof)\.?\s+/i, '').replace(/\s+/g, ' ').trim() : undefined;
+  const nm = (s) => s ? s.replace(/^(Mr|Mrs|Ms|Dr|Prof)\.?\s+/i, '').replace(/\s+/g, ' ').trim() : undefined;
 
   const r = {
     status: 'success',
@@ -322,8 +389,7 @@ function htmlDashen(html, fallbackRef) {
     senderName: nm(pick('sender name')),
     senderAccount: (pick('sender account number', 'sender account') || '').replace(/\s+/g, '') || undefined,
     receiverName: nm(pick('receiver name')),
-    receiverAccount:
-      (pick('receiver account number', 'receiver account', 'recipient account') || '').replace(/\s+/g, '') || undefined,
+    receiverAccount: (pick('receiver account number', 'receiver account', 'recipient account') || '').replace(/\s+/g, '') || undefined,
     amount: num(pick('transaction amount', 'amount')),
     serviceCharge: num(pick('service charge')),
     vat: num(pick('vat (15%)', 'vat')),
@@ -337,15 +403,13 @@ function htmlDashen(html, fallbackRef) {
   return r;
 }
 
-// ---------- M-Pesa ----------
+// ============================================================
+// M-Pesa
+// ============================================================
 async function mpesa(input) {
   const t = String(input || '').trim();
   if (!/ልከዋል|M-PESA ቀሪ|transaction id|You have transferred/i.test(t)) {
-    return {
-      status: 'failed',
-      source: 'none',
-      error: 'M-Pesa URL lookup not supported — paste the SMS text instead.',
-    };
+    return { status: 'failed', source: 'none', error: 'M-Pesa URL lookup not supported — paste the SMS text instead.' };
   }
   const f = t.replace(/\s+/g, ' ').trim();
   const r = { status: 'success', source: 'sms', currency: 'ETB' };
